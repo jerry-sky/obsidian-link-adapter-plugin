@@ -1,0 +1,10 @@
+{
+	"id": "link-adapter",
+	"name": "Link Adapter",
+	"version": "0.5.0",
+	"minAppVersion": "0.15.0",
+	"description": "Converts links to and from GFM format.",
+	"author": "Jerry Sky",
+	"authorUrl": "https://jerry-sky.me",
+	"isDesktopOnly": false
+}
