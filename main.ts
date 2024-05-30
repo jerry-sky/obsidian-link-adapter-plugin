@@ -1,15 +1,42 @@
-import {OpenViewState, PaneType, Plugin, Workspace} from 'obsidian';
+import {
+	CachedMetadata, HeadingCache, LinkCache,
+	MetadataCache,
+	OpenViewState,
+	PaneType,
+	Plugin,
+	TAbstractFile,
+	TFile,
+	Vault,
+	Workspace
+} from 'obsidian';
 import GithubSlugger from 'github-slugger';
 import * as path from 'path';
 
+interface CustomHeadingCache extends HeadingCache {
+	artificial: boolean;
+	originalHeading: string;
+}
+
+interface CustomLinkCache extends LinkCache {
+	artificial: boolean;
+}
 
 export default class ObsidianLinkAdapterPlugin extends Plugin {
 	originalOpenLinkText: Workspace['openLinkText'];
+	originalRename: Vault['rename'];
+	originalGetCache: MetadataCache['getCache'];
+	originalGetFileCache: MetadataCache['getFileCache'];
+
+	cache: any[] = [];
+	cache2: any[] = [];
 
 	githubSlugger: GithubSlugger;
 
 	onunload() {
 		Workspace.prototype.openLinkText = this.originalOpenLinkText;
+		Vault.prototype.rename = this.originalRename;
+		MetadataCache.prototype.getCache = this.originalGetCache;
+		MetadataCache.prototype.getFileCache = this.originalGetFileCache;
 	}
 
 	async onload() {
@@ -19,10 +46,37 @@ export default class ObsidianLinkAdapterPlugin extends Plugin {
 		const originalOpenLinkText = Workspace.prototype.openLinkText;
 		const that = this;
 		Workspace.prototype.openLinkText = async function (linktext: string, sourcePath: string, newLeaf?: PaneType | boolean, openViewState?: OpenViewState) {
+			console.log('openLinkText', linktext, sourcePath, newLeaf, openViewState);
 			const newLinkText = await that.parseGfmLinks.call(that, linktext, sourcePath);
-			return originalOpenLinkText.call(this, newLinkText, sourcePath, newLeaf, openViewState);
+			return originalOpenLinkText.call(this, linktext, sourcePath, newLeaf, openViewState);
 		}
 
+		this.originalRename = Vault.prototype.rename;
+		const originalRename = Vault.prototype.rename;
+		Vault.prototype.rename = async function (file: TAbstractFile, newPath: string) {
+			console.log('rename', file, newPath);
+			return originalRename.call(this, file, newPath);
+		}
+
+		this.originalGetCache = MetadataCache.prototype.getCache;
+		const originalGetCache = MetadataCache.prototype.getCache;
+		MetadataCache.prototype.getCache = function (path: string) {
+			const out = originalGetCache.call(this, path);
+			console.log('getCache', path, out);
+			const newOut = that.convertMetadata.call(that, out, path);
+			// console.log([...JSON.stringify(newOut).matchAll(/plumbing[-_\s]notes/ig)].map(x => x[0]));
+			return newOut;
+		}
+
+		this.originalGetFileCache = MetadataCache.prototype.getFileCache;
+		const originalGetFileCache = MetadataCache.prototype.getFileCache;
+		MetadataCache.prototype.getFileCache = function (file: TFile) {
+			const out = originalGetFileCache.call(this, file);
+			console.log('getFileCache', file, out);
+			const newOut = that.convertMetadata.call(that, out, file);
+			// console.log([...JSON.stringify(newOut).matchAll(/plumbing[-_\s]notes/ig)].map(x => x[0]));
+			return newOut;
+		}
 
 		this.registerEvent(
 			this.app.workspace.on('editor-change', async (editor, change) => {
@@ -108,6 +162,93 @@ export default class ObsidianLinkAdapterPlugin extends Plugin {
 			this.githubSlugger.reset();
 		}
 		return t[0] + '#' + newLinkText;
+	}
+
+	private convertMetadata(data: CachedMetadata, key: string | TFile): CachedMetadata {
+		if (key instanceof TFile) {
+			key = 'FILE::' + key.path
+		}
+		let map: Record<string, CustomHeadingCache> = this.cache[key];
+		if (map === undefined) {
+			map = {};
+		}
+		let map2: Record<string, CustomLinkCache> = this.cache[key];
+		if (map2 === undefined) {
+			map2 = {};
+		}
+
+		const sluggedMap: Record<string, HeadingCache> = [];
+		const slugger = new GithubSlugger();
+		for (const h of ((data.headings || []) as CustomHeadingCache[])) {
+
+			if (h.artificial) {
+				continue;
+			}
+
+			const headingKey = this.hashHeadingCache(h);
+			if (map[headingKey]) {
+				// map[headingKey];
+				sluggedMap[map[headingKey].heading] = h;
+				continue;
+			}
+			const slug = slugger.slug(h.heading);
+			const newH: CustomHeadingCache = {
+				heading: slug,
+				position: {
+					end: {...h.position.end},
+					start: {...h.position.start},
+				},
+				level: h.level,
+				artificial: true,
+				originalHeading: h.heading,
+			};
+			map[headingKey] = newH;
+			data.headings.push(newH);
+
+			sluggedMap[map[headingKey].heading] = h;
+		}
+		console.log(map);
+		this.cache[key] = map;
+
+		for (const l of (data.links || []) as (CustomLinkCache)[]) {
+			if (l.artificial) {
+				continue;
+			}
+
+			const t = l.link.split('#');
+
+			const linkKey = this.hashLinkCache(l);
+			if (map2[linkKey]) {
+				continue;
+			}
+			const h = sluggedMap[t[1]]
+			console.log(l, h);
+			if (!h) {
+				continue;
+			}
+			console.log('MARKER', l.link, t[1], h.heading);
+			const newL: CustomLinkCache = {
+				link: l.link.replace(t[1], h.heading),
+				position: {
+					end: {...l.position.end},
+					start: {...l.position.start},
+				},
+				artificial: true,
+				original: l.original.replace(t[1], encodeURI(h.heading)),
+				displayText: l.displayText,
+			};
+			data.links.push(newL);
+			map2[linkKey] = newL;
+		}
+
+		return data;
+	}
+
+	private hashHeadingCache(heading: HeadingCache): string {
+		return heading.heading + '::::' + heading.position.start.line + '::' + heading.position.start.col;
+	}
+	private hashLinkCache(link: LinkCache): string {
+		return link.original + '::::' + link.position.start.line + '::' + link.position.start.col;
 	}
 }
 
