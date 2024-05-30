@@ -34,6 +34,10 @@ const context = await esbuild.context({
 		...builtins],
 	format: "cjs",
 	target: "es2018",
+	platform: "browser",
+	alias: {
+		"path": "path-browserify"
+	},
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,

@@ -22,6 +22,7 @@
 		"typescript": "4.7.4"
 	},
 	"dependencies": {
-		"github-slugger": "^2.0.0"
+		"github-slugger": "^2.0.0",
+		"path-browserify": "^1.0.1"
 	}
 }
